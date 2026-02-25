@@ -1,0 +1,127 @@
+## LBM Compilation
+
+cd /home/ac.zzheng/benchmark/spec/LBM/build
+
+# Load modules
+module use /soft/modulefiles
+module load cuda/12.3.0
+module load gcc/12.2.0
+module load openmpi/4.1.1-gcc
+module load nvhpc/nvhpc/24.1
+export CUDA_DIR=/soft/compilers/cuda/cuda-12.3.0
+export MPI_INCLUDE=/soft/libraries/mpi/openmpi/4.1.1/include
+
+# Clean
+rm -f *.o lbm_cuda
+
+# Compile C files
+mpicc -c -DSPEC -DSPEC_CUDA -I../src -I../src/specmpitime ../src/main.c -o main.o
+mpicc -c -DSPEC ../src/specrand/specrand.c -o specrand.o
+mpicc -c -DSPEC -I../src/specmpitime ../src/specmpitime/specmpitime.c -o specmpitime.o
+
+# Compile CUDA file
+nvcc -c -DSPEC -DSPEC_CUDA -I../src -I../src/specmpitime -I${MPI_INCLUDE} ../src/lbm.cu -o lbm.o -arch=sm_90
+
+# Link
+mpicc main.o lbm.o specrand.o specmpitime.o -L${CUDA_DIR}/lib64 -lcudart -lm -lstdc++ -o lbm_cuda
+
+# Copy to run directory
+cp lbm_cuda ../run/
+
+## CloverLeaf Compilation
+
+cd /home/ac.zzheng/benchmark/spec/CloverLeaf
+
+# Clean and compile (Makefile automatically compiles all Fortran .f90, C .c, and CUDA .cu files)
+make clean
+make COMPILER=GNU NV_ARCH=HOPPER -j
+
+## TeaLeaf Compilation
+
+cd /home/ac.zzheng/benchmark/spec/TeaLeaf
+
+# Clean and configure
+rm -rf build
+cmake -Bbuild -H. \
+  -DMODEL=cuda \
+  -DCMAKE_CUDA_COMPILER=${CUDA_HOME}/bin/nvcc \
+  -DCUDA_ARCH=sm_90 \
+  -DENABLE_MPI=ON \
+  -DENABLE_PROFILING=ON \
+  -DCMAKE_BUILD_TYPE=Release
+
+# Compile
+cmake --build build -j
+
+## Minisweep Compilation
+
+cd /home/ac.zzheng/benchmark/spec/minisweep
+
+# Clean and configure
+rm -rf build
+cmake -Bbuild -H. \
+  -DUSE_CUDA=ON \
+  -DUSE_MPI=ON \
+  -DCMAKE_CUDA_COMPILER=${CUDA_HOME}/bin/nvcc \
+  -DCMAKE_BUILD_TYPE=Release
+
+# Compile
+cmake --build build -j
+
+## POT3D Compilation
+
+cd /home/ac.zzheng/benchmark/spec/POT3D
+
+# Configure MPI wrapper to use NVIDIA compilers
+export OMPI_FC=nvfortran
+export OMPI_CC=nvc
+export OMPI_CXX=nvc++
+
+# Set HDF5 path (built with NVHPC compilers)
+export HDF5_DIR=/home/ac.zzheng/hdf5-nvhpc
+
+# Build
+./build.sh conf/hopper_gpu.conf
+
+## miniWeather Compilation
+
+cd /home/ac.zzheng/benchmark/spec/miniWeather/cpp
+
+# Clone standalone YAKL version (before Kokkos integration)
+rm -rf YAKL
+git clone https://github.com/mrnorman/YAKL.git YAKL
+cd YAKL
+git checkout 92ae53c^
+cd ..
+
+# Clean and configure
+rm -rf build
+cmake -Bbuild -H. \
+  -DYAKL_ARCH=CUDA \
+  -DCMAKE_CUDA_COMPILER=${CUDA_HOME}/bin/nvcc \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_COMPILER=mpicxx \
+  -DCMAKE_C_COMPILER=mpicc \
+  -DNX=800 \
+  -DNZ=400 \
+  -DSIM_TIME=20000 \
+  -DOUT_FREQ=999999 \
+  -DCXXFLAGS="-DNO_INFORM"
+
+# Compile
+cd build
+cmake --build . -j
+
+## HPGMG Compilation
+
+cd /home/ac.zzheng/benchmark/spec/hpgmg
+
+# Build
+./build.sh
+
+# Output: ./build/bin/hpgmg-fv
+
+# Configuration (edit build.sh if needed):
+#   Line 10: GPU architecture (compute_90 for H100, compute_80 for A100)
+#   Line 27: MAX_SOLVES=10 (number of iterations)
+

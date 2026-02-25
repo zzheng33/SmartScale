@@ -1,0 +1,114 @@
+## LBM Benchmark Run Instructions
+
+# Single GPU:
+cd /home/ac.zzheng/benchmark/spec/LBM/run
+mpirun -np 1 --mca btl_openib_warn_no_device_params_found 0 --mca btl tcp,self,vader ./lbm_cuda
+
+# 4 GPUs:
+mpirun -np 4 --mca btl_openib_warn_no_device_params_found 0 --mca btl tcp,self,vader ./lbm_cuda
+
+## CloverLeaf Benchmark Run Instructions
+
+# Single GPU:
+cd /home/ac.zzheng/benchmark/spec/CloverLeaf
+mpirun -np 1 --mca btl_openib_warn_no_device_params_found 0 --mca btl tcp,self,vader ./clover_leaf
+
+# 4 GPUs:
+mpirun -np 4 --mca btl_openib_warn_no_device_params_found 0 --mca btl tcp,self,vader ./clover_leaf
+
+# Input file: clover.in
+# Key parameters:
+#   x_cells=7680        (grid width)
+#   y_cells=7680        (grid height)
+#   end_step=1000       (max iterations)
+#   end_time=15.6       (max simulation time)
+#   tiles_per_chunk=1   (parallelization)
+
+## TeaLeaf Benchmark Run Instructions
+(800W, 3 GPU)
+# Single GPU:
+cd /home/ac.zzheng/benchmark/spec/TeaLeaf
+mpirun -np 1 --mca btl_openib_warn_no_device_params_found 0 --mca btl tcp,self,vader ./build/cuda-tealeaf
+
+# 4 GPUs:
+mpirun -np 4 --mca btl_openib_warn_no_device_params_found 0 --mca btl tcp,self,vader ./build/cuda-tealeaf
+
+# Input file: tea.in
+# Key parameters:
+#   x_cells=512         (grid width)
+#   y_cells=512         (grid height)
+#   end_step=20         (max iterations)
+
+
+## Minisweep Run Instructions
+
+cd /home/ac.zzheng/benchmark/spec/minisweep/build
+
+# Run with MPI and CUDA
+mpirun -np 3 --mca btl_openib_warn_no_device_params_found 0 --mca btl tcp,self,vader \
+  ./sweep \
+  --ncell_x 64 --ncell_y 128 --ncell_z 128 \
+  --ne 16 --na 32 \
+  --nproc_x 3 --nproc_y 1 \
+  --nblock_z 128 \
+  --is_using_device 1 \
+  --nthread_octant 8 --nthread_e 16
+
+## POT3D Run Instructions
+
+cd /home/ac.zzheng/benchmark/spec/POT3D/testsuite/validation/run
+
+# Copy the executable
+cp ../../../bin/pot3d .
+
+# Run with MPI (adjust -np to match number of GPUs)
+mpirun -np 4 --mca btl_openib_warn_no_device_params_found 0 --mca btl tcp,self,vader \
+  ./pot3d
+
+# Note: Set ifprec=2 in pot3d.dat when using cuSparse (recommended for performance)
+
+
+
+## miniWeather Run Instructions
+
+cd /home/ac.zzheng/benchmark/spec/miniWeather/cpp/build
+
+# Single GPU:
+./parallelfor
+
+# 2 GPUs:
+mpirun -np 2 bash -c 'export CUDA_VISIBLE_DEVICES=$OMPI_COMM_WORLD_LOCAL_RANK; ./parallelfor'
+
+# 4 GPUs:
+mpirun -np 4 bash -c 'export CUDA_VISIBLE_DEVICES=$OMPI_COMM_WORLD_LOCAL_RANK; ./parallelfor'
+
+# Problem size control (requires rebuild):
+# Adjust NX, NZ, and SIM_TIME in cmake configuration:
+#   -DNX=800      (horizontal grid size)
+#   -DNZ=400      (vertical grid size)
+#   -DSIM_TIME=20000 (simulation time - controls duration)
+#
+# Weak scaling (same work per GPU):
+#   1 GPU:  NX=400,  NZ=200
+#   2 GPUs: NX=800,  NZ=200
+#   4 GPUs: NX=1600, NZ=200
+
+## HPGMG Run Instructions
+
+cd /home/ac.zzheng/benchmark/spec/hpgmg
+
+# Syntax:
+# mpirun -np <NUM_GPUS> ./build/bin/hpgmg-fv <log2_box_dim> <boxes_per_rank>
+
+# Parameters:
+#   log2_box_dim   : 4-9 (box size = 2^value: 6=64³, 7=128³, 8=256³, 9=512³)
+#   boxes_per_rank : Boxes per MPI rank (>=1)
+
+# Examples:
+mpirun -np 4 ./build/bin/hpgmg-fv 7 8     # 4 GPUs, 128³ boxes, 8 boxes/rank
+mpirun -np 4 ./build/bin/hpgmg-fv 8 8     # 4 GPUs, 256³ boxes, 8 boxes/rank
+mpirun -np 4 ./build/bin/hpgmg-fv 9 2     # 4 GPUs, 512³ boxes, 2 boxes/rank
+
+# Show only performance summary:
+mpirun -np 4 ./build/bin/hpgmg-fv 8 8 2>&1 | grep -A5 "Performance Summary"
+

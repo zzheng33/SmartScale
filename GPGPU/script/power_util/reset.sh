@@ -1,0 +1,8 @@
+#!/bin/bash
+
+
+geopmwrite NVML::GPU_POWER_LIMIT_CONTROL gpu 0 700
+geopmwrite NVML::GPU_POWER_LIMIT_CONTROL gpu 1 700
+geopmwrite NVML::GPU_POWER_LIMIT_CONTROL gpu 2 700
+geopmwrite NVML::GPU_POWER_LIMIT_CONTROL gpu 3 700
+
