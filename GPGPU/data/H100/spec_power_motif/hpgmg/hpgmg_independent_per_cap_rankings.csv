@@ -1,4 +1,4 @@
-power_cap,pred_rank,true_rank,pred_optimal_gpu,true_optimal_gpu,top1_correct,kendall_tau,best_runtime,worst_runtime,speedup_vs_worst
+power_cap,pred_rank,true_rank,pred_optimal_gpu,true_optimal_gpu,top1_correct,kendall_tau,best_target,worst_target,speedup_vs_worst
 800,"[2, 1, 3, 4]","[2, 1, 3, 4]",2,2,1,1.0,4.860593795776367,393.7635688781738,81.0114124781084
 900,"[2, 1, 3, 4]","[2, 1, 3, 4]",2,2,1,1.0,4.869896650314331,392.26594638824463,80.54913164593042
 1000,"[2, 1, 3, 4]","[2, 1, 3, 4]",2,2,1,1.0,4.053678750991821,389.80517578125,96.16084542611465
