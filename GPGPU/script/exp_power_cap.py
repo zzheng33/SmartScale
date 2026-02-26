@@ -24,25 +24,26 @@ read_cpu_metrics = os.path.join(script_dir, "power_util/read_cpu_metrics.py")
 # scritps for running various benchmarks
 run_app = os.path.join(script_dir, "run_benchmark/run_app.py")
 
-ecp_benchmarks = ['XSBench','miniGAN','CRADL','sw4lite','Laghos','bert_large','UNet','Resnet50','lammps','gromacs',"NAMD"]
+
 hec_benchmarks = ["addBiasResidualLayerNorm", "aobench", "background-subtract", "chacha20", "convolution3D", "dropout", "extrema", "fft", "kalman", "knn", "softmax", "stencil3d", "zmddft", "zoom"]
 altis_benchmarks_0 = ["maxflops"]
 altis_benchmarks_1 = ['bfs','gemm','gups','pathfinder','sort']
 altis_benchmarks_2 = ['cfd','cfd_double','fdtd2d','kmeans','lavamd',
                       'nw','particlefilter_float','particlefilter_naive','raytracing',
                       'srad','where']
-ecp_benchmarks = ['XSBench','miniGAN','CRADL','sw4lite','Laghos','bert_large','UNet','Resnet50','lammps','gromacs',"NAMD"]
+ecp_benchmarks = ['XSBench','miniGAN','CRADL','sw4lite','Laghos','bert','UNet','Resnet50','lammps','gromacs',"NAMD"]
 
+ecp_benchmarks = ['bert']
 
 spec_benchmarks = ['lbm', 'cloverleaf', 'tealeaf', 'minisweep', 'pot3d', 'miniweather', 'hpgmg']
 
-# ml_models = ["resnet50", "vgg16"]
-ml_models = ["resnet50"]
+ml_models = ["resnet50", "vgg16"]
+
 cpu_caps = [700]
-# GPU_ct = [1,2,3,4]
-GPU_ct = [4]
+GPU_ct = [1,2,3,4]
+# GPU_ct = [4]
 gpu_caps = [400,500,600,700,800,900,1000,1100,1200,1300,1400,1500,1600,1700,1800]
-gpu_caps= [800]
+# gpu_caps= [800]
 
 ML_MIN_PER_GPU_CAP = 200
 ML_MAX_PER_GPU_CAP = 700
@@ -74,10 +75,106 @@ def _extract_avg_train_throughput(stdout_text):
     return None
 
 
+def _extract_token_throughput(stdout_text):
+    patterns = [
+        r"([0-9]+(?:\.[0-9]+)?)\s*tokens/sec",
+        r"([0-9]+(?:\.[0-9]+)?)\s*token/sec",
+        r"([0-9]+(?:\.[0-9]+)?)\s*tokens/s",
+        r"([0-9]+(?:\.[0-9]+)?)\s*token/s",
+        r"tokens/sec\s*([0-9]+(?:\.[0-9]+)?)",
+        r"token/sec\s*([0-9]+(?:\.[0-9]+)?)",
+        r"tokens/s\s*([0-9]+(?:\.[0-9]+)?)",
+        r"token/s\s*([0-9]+(?:\.[0-9]+)?)",
+    ]
+    for pat in patterns:
+        matches = re.findall(pat, stdout_text, flags=re.IGNORECASE)
+        if matches:
+            return float(matches[-1])
+    return None
+
+
+def _is_bert_benchmark(suite_name, benchmark_name):
+    if str(suite_name).lower() != "ecp":
+        return False
+    bn = str(benchmark_name).lower()
+    return bn == "bert" or bn == "bert_large" or "bert" in bn
+
+
+def _per_gpu_cap_from_total(total_gpu_cap, gpu_count):
+    if gpu_count <= 0:
+        return None
+    per_gpu_cap = float(total_gpu_cap) / float(gpu_count)
+    if per_gpu_cap < ML_MIN_PER_GPU_CAP:
+        return None
+    # If total budget is above per-GPU TDP, still run with fewer GPUs by capping at TDP.
+    per_gpu_cap = min(per_gpu_cap, ML_MAX_PER_GPU_CAP)
+    return int(per_gpu_cap)
+
+
+def _set_power_cap(cpu_cap, per_gpu_cap):
+    subprocess.run(
+        [os.path.join(script_dir, "power_util/cap.sh"), str(cpu_cap), str(per_gpu_cap)],
+        check=True,
+    )
+    time.sleep(0.2)
+
+
+def _run_with_gpu_monitor(cmd, cwd, output_gpu_metrics, num_gpu_to_monitor):
+    process = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+        bufsize=1,
+    )
+
+    monitor_cmd = [
+        python_executable,
+        read_gpu_metrics,
+        "--output_csv",
+        output_gpu_metrics,
+        "--pid",
+        str(process.pid),
+        "--num_gpu",
+        str(num_gpu_to_monitor),
+    ]
+    monitor_process = subprocess.Popen(
+        monitor_cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+
+    output_lines = []
+    for line in iter(process.stdout.readline, ""):
+        print(line, end="")
+        output_lines.append(line)
+    process.stdout.close()
+    return_code = process.wait()
+
+    monitor_stdout = ""
+    monitor_stderr = ""
+    try:
+        # Give monitor some time to flush/write final samples after app exits.
+        monitor_stdout, monitor_stderr = monitor_process.communicate(timeout=15)
+    except subprocess.TimeoutExpired:
+        try:
+            monitor_process.terminate()
+            monitor_stdout, monitor_stderr = monitor_process.communicate(timeout=5)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    return return_code, "".join(output_lines), monitor_stdout, monitor_stderr
+
+
 
 def run_ml_experiment(model_name=None):
     cpu_cap = 700
-    ml_dir = os.path.join(home_dir, "overprovision", "ML")
+    ml_dir = os.path.join(home_dir, "power", "ML")
     ml_script = os.path.join(ml_dir, "dl.py")
     ml_python = _select_ml_python()
 
@@ -116,17 +213,12 @@ def run_ml_experiment(model_name=None):
     for model in models:
         for g_cnt in GPU_ct:
             for total_gpu_cap in gpu_caps:
-                per_gpu_cap = total_gpu_cap / g_cnt
-                if per_gpu_cap < ML_MIN_PER_GPU_CAP or per_gpu_cap > ML_MAX_PER_GPU_CAP:
+                per_gpu_cap_int = _per_gpu_cap_from_total(total_gpu_cap, g_cnt)
+                if per_gpu_cap_int is None:
                     # Skip invalid combinations that violate H100 per-GPU cap range.
                     continue
 
-                per_gpu_cap_int = int(per_gpu_cap)
-                subprocess.run(
-                    [os.path.join(script_dir, "power_util/cap.sh"), str(cpu_cap), str(per_gpu_cap_int)],
-                    check=True,
-                )
-                time.sleep(0.2)
+                _set_power_cap(cpu_cap, per_gpu_cap_int)
 
                 cmd = [
                     ml_python,
@@ -142,39 +234,17 @@ def run_ml_experiment(model_name=None):
                     f"[ML] Running model={model} total_cap={total_gpu_cap} "
                     f"gpus={g_cnt} per_gpu_cap={per_gpu_cap_int}"
                 )
-                process = subprocess.Popen(
-                    cmd,
-                    cwd=ml_dir,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    universal_newlines=True,
-                    bufsize=1,
-                )
                 model_output_dir = os.path.join(output_root_dir, model)
                 output_gpu_metrics = os.path.join(
                     model_output_dir,
                     f"{total_gpu_cap}_{g_cnt}_gpu_metrics.csv",
                 )
-
-                monitor_command_gpu_metrics = f"{python_executable} {read_gpu_metrics}  --output_csv {output_gpu_metrics} --pid {process.pid} --num_gpu {num_gpu}"
-                monitor_process0 = subprocess.Popen(monitor_command_gpu_metrics, shell=True, stdin=subprocess.PIPE,universal_newlines=True)
-                
-                output_lines = []
-                for line in iter(process.stdout.readline, ""):
-                    print(line, end="")
-                    output_lines.append(line)
-                process.stdout.close()
-                return_code = process.wait()
-                monitor_stdout = ""
-                monitor_stderr = ""
-                try:
-                    if monitor_process0 is not None:
-                        monitor_process0.terminate()
-                        monitor_stdout, monitor_stderr = monitor_process0.communicate(timeout=3)
-                except Exception:
-                    pass
-
-                run_output = "".join(output_lines)
+                return_code, run_output, _, monitor_stderr = _run_with_gpu_monitor(
+                    cmd=cmd,
+                    cwd=ml_dir,
+                    output_gpu_metrics=output_gpu_metrics,
+                    num_gpu_to_monitor=g_cnt,
+                )
                 throughput = _extract_avg_train_throughput(run_output)
                 status = "ok" if (return_code == 0 and throughput is not None) else "failed"
 
@@ -215,66 +285,112 @@ def run_ml_experiment(model_name=None):
 
 
 def run_benchmark(benchmark_script_dir,benchmark, suite, test, size,cap_type):
-
-    def cap_exp(g_cnt, cpu_cap, gpu_cap, output_cpu_power, output_gpu_power,output_ips, output_gpu_metrics,output_mem, output_cpu_metrics, output_runtime):
-
-        # gpu_cap = min(gpu_cap / g_cnt, 700)
-
-        subprocess.run([os.path.join(script_dir, "power_util/cap.sh"), str(cpu_cap), str(gpu_cap)], check=True)
-        time.sleep(0.2)  # Wait for the power caps to take effect
-
-        # Run the benchmark
-        start = time.time()
-
-        run_benchmark_command = f"bash {os.path.join(home_dir, benchmark_script_dir, f'{benchmark}.sh')} {g_cnt}"
-
-        benchmark_process = subprocess.Popen(run_benchmark_command, shell=True)
-        benchmark_pid = benchmark_process.pid
-
-
-        # # monitor GPU metrics
-        monitor_command_gpu_metrics = f"{python_executable} {read_gpu_metrics}  --output_csv {output_gpu_metrics} --pid {benchmark_pid} --num_gpu {num_gpu}"
-        monitor_process4 = subprocess.Popen(monitor_command_gpu_metrics, shell=True, stdin=subprocess.PIPE,universal_newlines=True)
-
-        benchmark_process.wait()  # Wait for the benchmark to complete
-
-        end = time.time()
-        elapsed_time = end - start
-
-        # Write runtime to CSV (append mode)
-        file_exists = os.path.exists(output_runtime)
-        with open(output_runtime, 'a') as f:
-            if not file_exists:
-                f.write(f"power_cap,gpu_count,runtime_seconds\n")
-            f.write(f"{gpu_cap},{g_cnt},{elapsed_time}\n")
-
-        
-################## end helper function ####################
-    
     cpu_cap = 700
+    is_bert = _is_bert_benchmark(suite, benchmark)
 
-    # Create output directory and runtime file
-    output_dir = f"../data/H100/{suite}_power_motif/{benchmark}"
+    # For ECP BERT, store both throughput and GPU metrics under ml_power_motif.
+    if is_bert:
+        output_dir = os.path.abspath(
+            os.path.join(script_dir, "..", "data", "H100", "ml_power_motif", benchmark)
+        )
+    else:
+        output_dir = f"../data/H100/{suite}_power_motif/{benchmark}"
     os.makedirs(output_dir, exist_ok=True)
     output_runtime = f"{output_dir}/runtime.csv"
 
-    # Delete existing runtime file to start fresh
-    if os.path.exists(output_runtime):
+    # Delete existing runtime file to start fresh (non-BERT benchmark only).
+    if (not is_bert) and os.path.exists(output_runtime):
         os.remove(output_runtime)
 
+    bert_throughput_csv = None
+    if is_bert:
+        bert_throughput_csv = os.path.join(output_dir, "throughput.csv")
+        if os.path.exists(bert_throughput_csv):
+            os.remove(bert_throughput_csv)
+        with open(bert_throughput_csv, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "total_gpu_cap",
+                "gpu_count",
+                "per_gpu_cap",
+                "benchmark",
+                "throughput_tokens_per_sec",
+                "status",
+            ])
+
     for g_cnt in GPU_ct:
-        for gpu_cap in gpu_caps:
-            output_cpu_power = f"{output_dir}/{gpu_cap}_cpu_power.csv"
-            output_gpu_power = f"{output_dir}/{gpu_cap}_{g_cnt}_gpu_power.csv"
-            output_ips = f"{output_dir}/{gpu_cap}_{g_cnt}_ips.csv"
-            output_mem = f"{output_dir}/{gpu_cap}_{g_cnt}_mem.csv"
-            output_gpu_metrics = f"{output_dir}/{gpu_cap}_{g_cnt}_gpu_metrics.csv"
-            output_cpu_metrics = f"{output_dir}/{gpu_cap}_{g_cnt}_cpu_metrics.csv"
-            cap_exp(g_cnt, cpu_cap, gpu_cap, output_cpu_power, output_gpu_power,output_ips,output_gpu_metrics,output_mem,output_cpu_metrics,output_runtime)
+        for total_gpu_cap in gpu_caps:
+            per_gpu_cap = _per_gpu_cap_from_total(total_gpu_cap, g_cnt)
+            if per_gpu_cap is None:
+                continue
+
+            output_gpu_metrics = f"{output_dir}/{total_gpu_cap}_{g_cnt}_gpu_metrics.csv"
+            _set_power_cap(cpu_cap, per_gpu_cap)
+            run_benchmark_command = [
+                "bash",
+                os.path.join(home_dir, benchmark_script_dir, f"{benchmark}.sh"),
+                str(g_cnt),
+            ]
+
+            print(
+                f"[{suite.upper()}] Running benchmark={benchmark} total_cap={total_gpu_cap} "
+                f"gpus={g_cnt} per_gpu_cap={per_gpu_cap}"
+            )
+            start = time.time()
+            return_code, run_output, _, monitor_stderr = _run_with_gpu_monitor(
+                cmd=run_benchmark_command,
+                cwd=None,
+                output_gpu_metrics=output_gpu_metrics,
+                num_gpu_to_monitor=g_cnt,
+            )
+            elapsed_time = time.time() - start
+
+            # Write runtime to CSV (append mode) for non-BERT benchmarks.
+            if not is_bert:
+                file_exists = os.path.exists(output_runtime)
+                with open(output_runtime, 'a') as f:
+                    if not file_exists:
+                        f.write(f"power_cap,gpu_count,runtime_seconds\n")
+                    f.write(f"{total_gpu_cap},{g_cnt},{elapsed_time}\n")
+
+            if bert_throughput_csv is not None:
+                tok_s = _extract_token_throughput(run_output)
+                status = "ok" if (return_code == 0 and tok_s is not None) else "failed"
+                with open(bert_throughput_csv, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        total_gpu_cap,
+                        g_cnt,
+                        per_gpu_cap,
+                        benchmark,
+                        f"{tok_s:.2f}" if tok_s is not None else "",
+                        status,
+                    ])
+
+            if return_code != 0:
+                print(
+                    f"[{suite.upper()}][WARN] benchmark={benchmark} total_cap={total_gpu_cap} "
+                    f"gpus={g_cnt} per_gpu_cap={per_gpu_cap} failed. returncode={return_code}"
+                )
+            if (not os.path.exists(output_gpu_metrics)) or os.path.getsize(output_gpu_metrics) == 0:
+                print(
+                    f"[{suite.upper()}][WARN] missing/empty GPU metrics file for benchmark={benchmark} "
+                    f"cap={total_gpu_cap} gpus={g_cnt}: {output_gpu_metrics}"
+                )
+                if monitor_stderr:
+                    print("[BENCHMARK][MONITOR STDERR]")
+                    print(monitor_stderr[-1000:])
+            if bert_throughput_csv is not None and tok_s is None:
+                print(
+                    f"[{suite.upper()}][WARN] tokens/sec not found in output for benchmark={benchmark} "
+                    f"cap={total_gpu_cap} gpus={g_cnt}"
+                )
 
 
 
     subprocess.run([os.path.join(script_dir, "power_util/cap.sh"), str(700), str(700)], check=True)
+    if bert_throughput_csv is not None:
+        print(f"[ECP] BERT throughput saved to: {bert_throughput_csv}")
 
 
 if __name__ == "__main__":

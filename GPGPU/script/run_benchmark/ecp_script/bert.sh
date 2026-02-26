@@ -4,7 +4,7 @@ set -euo pipefail
 
 home_dir=$HOME
 benchmark_dir="${home_dir}/benchmark/ECP/bert-large/"
-venv_activate="${home_dir}/ML/env/ml/bin/activate"
+venv_activate="${home_dir}/env/ml/bin/activate"
 nproc_per_node=2
 
 usage() {
@@ -46,9 +46,7 @@ cd "${benchmark_dir}"
 source "${venv_activate}"
 
 
-# training.py expects torch.distributed env vars (LOCAL_RANK/RANK/WORLD_SIZE),
-# so launch via torchrun instead of plain python.
-torchrun --standalone --nproc_per_node="${nproc_per_node}" training.py
+/home/ac.zzheng/env/ml/bin/python3 training.py --num-gpus "${nproc_per_node}"
 
 
 deactivate
